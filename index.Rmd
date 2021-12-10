@@ -50,88 +50,221 @@ class_diag <- function(score, truth, positive, cutoff=.5){
 
 ### Introduction 
 
-Paragraph or two introducing your datasets and variables, why they are interesting to you, etc. See instructions for more information
+I will be working with the vehicles dataset. This is the same one that was used in project 1. Due to my familiarity with it and my sustained interest in the automotive community, I decided to use it for this project as well. The vehicles dataset was sourced from the US Department of Energy (www.fueleconomy.gov). The vehicles dataset has a lot of columns. As a general overview, it provides information on make, model, year, city mpg, highway mpg, combined mpg, and many more statistics that give more insight into the vehicles and how environmentally-friendly they may be. The vehicles dataset has 44,459 rows or observations. A categorical variable will be created that shows True or False whether or not a vehicle is an EV. Out of the vehicles dataset, 42,952 (96.7%) have a value of False for EV, and 1,507 have a value of True for EV.
+
 
 ```{R}
 library(tidyverse)
-# read your datasets in here, e.g., with read_csv()
-
-# if your dataset needs tidying, do so here
-
-# any other code here
+vehicles <- read_csv("https://www.fueleconomy.gov/feg/epadata/vehicles.csv")
+vehicles <- vehicles %>% select(-charge120, -fuelType2, -rangeA, -evMotor, -mfrCode, -c240Dscr, -c240bDscr, -startStop, -city08U, -cityA08U, -comb08U, combA08U) #removes rows that are all 0s
+vehicles <- vehicles %>% filter(!atvType %in% c("Bifuel (LPG)", "FFV", "CNG", "Bifuel (CNG)"))
+vehicles <- vehicles %>% mutate(EV = (ifelse(atvType %in% c("EV","Plug-in Hybrid","Hybrid"),"True","False")))  
+vehicles %>% head()
+vehicles %>% filter(charge240>0) %>% select(EV) %>% head()
+vehicles %>% group_by(EV)%>%select(EV) %>% count()
 ```
 
 ### Cluster Analysis
 
 ```{R}
 library(cluster)
-# clustering code here
+clust_dat1<-vehicles%>%dplyr::select(comb08,year,fuelCost08) %>% sample_frac(0.1)
+
+sil_width<-vector() #empty vector to hold mean sil width
+for(i in 2:10){  
+  pam_fit <- pam(clust_dat1,k=i)
+  sil_width[i]<- pam_fit$silinfo$avg.width
+} #loop takes too long with whole dataset 
+
+ggplot()+geom_line(aes(x=1:10,y=sil_width))+scale_x_continuous(name="k",breaks=1:10) # Use 2 from office hours
+
+clust_dat<-vehicles%>%dplyr::select(comb08,year,fuelCost08)
+pam1 <- clust_dat %>% pam(k=2)
+plot(pam1, which=2) #avg silhouette width 0.55 with whole dataset
+
+
+library(GGally)
+
+clust_dat %>% mutate(cluster=as.factor(pam1$clustering)) %>% 
+ggpairs(columns = c("comb08","year","fuelCost08"), aes(color=cluster))
+
 ```
 
-Discussion of clustering here
+k = 2 clusters were used as advised by Professor Woodward in office hours. The size of the dataset made running the loops for finding the highest avg silhouette width a challenge. The plot shows that k = 10 would yield a higher silhouette width, but 10 clusters in a dataset this big would be hard to manage, thus why k = 2 was used. After that loop, the whole dataset was used for pam clustering. With an average silhouette width of 0.55, it shows that a reasonable structure has been found for the clusters using the three variables comb08, year, and fuelCost08 to predict whether or not a car is an EV or Plug-in Hybrid. The pairwise combinations of the variables showing clusters using ggpairs shows that fuelCost08 and comb08 have significant separation between the clusters (as seen in the density plots). Year shows more overlap between the clusters but still significant differentiation. There is a weak positive correlation between year and comb08, which makes sense since newer EV cars have outlier-level average mpg (comb08) values. There is a moderate to strong correlation between fuelCost08 and comb08, which suggests that cars with lower average mpg (comb08) have higher fuel costs (fuelCost08). Finally, there is a weak negative correlation between year and fuelCost08 suggesting (at least weakly) that more modern cars have lower fuel costs.
+
     
     
 ### Dimensionality Reduction with PCA
 
 ```{R}
-# PCA code here
+pca1 <- princomp(clust_dat, cor=T)
+summary(pca1,loadings=T)
+pca1$scores %>% as.data.frame() ->pcadf
+pcadf%>% ggplot(aes(Comp.1, Comp.2)) + geom_point() 
 ```
 
-Discussions of PCA here. 
+PCA 1 and PCA 2 have components from the three variables used to predict EV. PCA 1 selects vehicles that score high on comb08 (avergae mpg), vehicles that are newer (higher year; with less weight than comb08), and vehicles that have lower fuelCost08. PCA 2 is very weighted towards selecting vehicles that are older (low year values), and slightly less weighted to selecting vehicles with low fuelCost08 (comb08 has small impact). PCA 3 only has two components and selects vehicles that score high on comb08 and fuelCost08. PCA 1 looks at vehicles with good mpg and thus low fuel costs. PCA 2 really focuses on vehicles that are older. PCA 3 looks at vehicles that have high average mpg but still have high fuel costs.
+
+PCA 1 explains 0.5998229 (60%) and PCA 2 explains 0.9037989 (90%) of the data. PCA 3 explains the remaining 10%. The PCA plot shows a somewhat positive correlation between PCA 1 and PCA 2. 
 
 ###  Linear Classifier
 
 ```{R}
-# linear classifier code here
-```
+class_dat <- vehicles %>% select(co2TailpipeGpm,comb08,barrels08,city08,cylinders,displ,fuelCost08,highway08,youSaveSpend,EV) %>% na.omit 
+logistic_fit <- glm(EV=="True"~co2TailpipeGpm+comb08+barrels08+city08+cylinders+displ+fuelCost08+highway08+youSaveSpend, data=class_dat, family="binomial")
+prob_reg<-predict(logistic_fit, type="response")
+class_diag(prob_reg, class_dat$EV,positive="True")
 
+table(truth=factor(class_dat$EV,levels=c("True","False")),predict=factor(prob_reg>.5,levels=c("TRUE","FALSE"))) %>% addmargins
+
+```
+### Cross-validation
 ```{R}
 # cross-validation of linear classifier here
+set.seed(123)
+k=10
+
+data<-sample_frac(class_dat) #randomly order rows
+folds <- rep(1:k, length.out=nrow(data)) #create folds
+
+diags<-NULL
+
+i=1
+for(i in 1:k){
+# create training and test sets
+train<-data[folds!=i,] 
+test<-data[folds==i,] 
+truth<-test$EV
+
+# train model
+fit <- glm(EV=="True"~.,data=train,family="binomial")### SPECIFY THE LOGISTIC REGRESSION MODEL FIT TO THE TRAINING SET HERE
+# test model
+probs <- predict(fit,newdata = test,type="response")### GET PREDICTIONS FROM THE TRAINED MODEL ON THE TEST SET HERE
+
+# get performance metrics for each fold
+diags<-rbind(diags,class_diag(probs,truth,positive="True")) }
+
+#average performance metrics across all folds
+summarize_all(diags,mean)
 ```
 
-Discussion here
+When using logistic regression as the linear classifier, the AUC value was 0.9849 which is great and suggests that we can predict whether or not a vehicle is an EV using the selected variables with great accuracy. When performing cross-validation by training the model and then testing the model on parts of the dataset, the AUC is 0.97155. As expected, this is slightly lower than the original AUC, but it is very close, suggesting little to no overfitting (1.4% difference).
+
 
 ### Non-Parametric Classifier
 
 ```{R}
+class_dat3 <- class_dat %>% sample_frac(0.1)
+
 library(caret)
 # non-parametric classifier code here
+knn_fit <- knn3(factor(EV=="True",levels=c("TRUE","FALSE"))~co2TailpipeGpm+comb08+barrels08+city08+cylinders+displ+fuelCost08+highway08+youSaveSpend, data=class_dat, k=5)
+
+y_hat_knn <- predict(knn_fit,class_dat)
+
+class_diag(y_hat_knn[,1], class_dat$EV, positive="True")
+
+table(truth=factor(class_dat$EV,levels=c("True","False")),predict=factor(y_hat_knn[,1]>0.5,levels=c("TRUE","FALSE"))) %>% addmargins
+
+
 ```
 
 ```{R}
 # cross-validation of np classifier here
+set.seed(123)
+k=10
+
+data<-sample_frac(class_dat3) #randomly order rows
+folds <- rep(1:k, length.out=nrow(data)) #create folds
+
+diags<-NULL
+
+i=1
+for(i in 1:k){
+# create training and test sets
+train<-data[folds!=i,] 
+test<-data[folds==i,] 
+truth<-test$EV
+# train model
+fit <- knn3(EV=="True"~co2TailpipeGpm+comb08+barrels08+city08+cylinders+displ+fuelCost08+highway08+youSaveSpend, data=train, k=5)
+
+y_hat <- predict(fit,test)
+
+# get performance metrics for each fold
+diags<-rbind(diags,class_diag(y_hat[,2],truth,positive="True"))
+}
+
+#average performance metrics across all folds
+summarize_all(diags,mean)
 ```
 
-Discussion
+The original AUC of the non-parametric classifier is 0.9989, which is great. When performing cross-validation with the non-parametric classifier, the AUC is 0.80272. This is about 20% lower, suggesting that there is overfitting going on. An AUC of 0.8 is good. The non-parametric classifier performed significantly worse in cross-validation compared to the linear classifier from before (0.07% difference in CV).
 
 
 ### Regression/Numeric Prediction
 
 ```{R}
-# regression model code here
+logistic_fit1 <- glm(comb08~co2TailpipeGpm+barrels08+city08+cylinders+displ+fuelCost08+highway08+youSaveSpend, data=class_dat)
+
+model_summary <- summary(logistic_fit1)
+probs1 <- predict(logistic_fit1)
+class_diag(probs1, class_dat$EV, positive="True")
+
+model_summary<-summary(probs1)
+
+mean((class_dat$comb08-probs1)^2) #MSE 446.17
+
 ```
 
 ```{R}
 # cross-validation of regression model here
+set.seed(123)
+k=5 #choose number of folds
+data<-class_dat[sample(nrow(class_dat)),] #randomly order rows
+folds<-cut(seq(1:nrow(class_dat)),breaks=k,labels=F) #create folds
+MSE<-NULL
+
+for(i in 1:k){
+  train<-data[folds!=i,]
+  test<-data[folds==i,]
+  ## Fit linear regression model to training set
+  fit<-glm(comb08~co2TailpipeGpm+barrels08+city08+cylinders+displ+fuelCost08+highway08+youSaveSpend,data=train)
+  ## Get predictions/y-hats on test set (fold i)
+  yhat<-predict(fit,newdata=test)
+  ## Compute prediction error  (MSE) for fold i
+  MSE<- c(MSE,mean((test$comb08-yhat)^2))
+}
+mean(MSE) 
 ```
 
-Discussion
+The AUC of the logistic regression model was 0.8383 which is good. When running the original logistic regression model, the mean squared error was 0.130161. When performing cross-validation, where the data is trained on some folds and tested on others, the mean squared error was 0.1303293. This is negligibly higher than the original MSE (0.13% difference), which suggest no signs of overfitting. The dataset has over 40,000 rows or 40,000 variables to use when making predictions. Due to the vast amount of data, it is unlikely that overfitting would be an issue, as is the case.
 
 ### Python 
 
 ```{R}
 library(reticulate)
+use_python("/usr/bin/python3")
+plot <- import("matplotlib")
+plot$use("Agg", force = TRUE)
 ```
 
 ```{python}
 # python code here
+import matplotlib.pyplot as plt
+#import numpy as np
+
+x=r.vehicles['year']
+y=r.vehicles['comb08']
+hi="world"
+plt.scatter(x,y)
 ```
 
-Discussion
+```{R}
+py$hi
+```
 
-### Concluding Remarks
 
-Include concluding remarks here, if any
+In this section, I imported matplotlib onto R and used reticulate to do so. use_python allows for saved objects to be used between R and python. In the python chunk, matplotlib is also installed. Then, the variable year from the vehicles dataset from R is assigned to the variable 'x' in python, and the variable comb08 from the vehicles dataset in R is assigned to the variabel 'y' in python. A scatter plot is then made from these two R variabels in python. Finally, text is saved as hi in python and displayed in an R chunk (object from python in R).
 
 
 
